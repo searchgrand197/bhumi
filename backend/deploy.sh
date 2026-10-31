@@ -2,19 +2,32 @@
 # One-shot Ubuntu deploy: Django (Gunicorn) + Vite frontend + Nginx
 # Domain: yourbrand.intvice.com
 #
-# On the VPS (as root), from the Django backend folder:
-#   sudo bash deploy.sh
+# After cloning from GitHub:
+#   git clone https://github.com/searchgrand197/bhumi.git
+#   cd bhumi
+#   sudo bash backend/deploy.sh
+#
+# Or from the backend folder:
+#   cd bhumi/backend && sudo bash deploy.sh
 #
 # Optional:
-#   DOMAIN=yourbrand.intvice.com EMAIL=you@example.com sudo -E bash deploy.sh
+#   DOMAIN=yourbrand.intvice.com EMAIL=you@example.com sudo -E bash backend/deploy.sh
 
 set -euo pipefail
+
+# Survive CRLF if the file was edited on Windows
+if [[ "$(uname -s)" == "Linux" ]] && grep -q $'\r' "$0" 2>/dev/null; then
+  tmp="$(mktemp)"
+  tr -d '\r' < "$0" > "$tmp"
+  exec bash "$tmp" "$@"
+fi
 
 DOMAIN="${DOMAIN:-yourbrand.intvice.com}"
 APP_NAME="${APP_NAME:-yourbrand}"
 APP_USER="${APP_USER:-www-data}"
 EMAIL="${EMAIL:-admin@${DOMAIN}}"
 WORKERS="${WORKERS:-$(( $(nproc) * 2 + 1 ))}"
+SEED_DATA="${SEED_DATA:-1}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root: sudo bash deploy.sh"
@@ -22,7 +35,25 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="${APP_DIR:-$SCRIPT_DIR}"
+
+# Support both: repo root (bhumi/) and backend/ (bhumi/backend/)
+if [[ -n "${APP_DIR:-}" ]]; then
+  :
+elif [[ -f "${SCRIPT_DIR}/manage.py" ]]; then
+  APP_DIR="${SCRIPT_DIR}"
+elif [[ -f "${SCRIPT_DIR}/backend/manage.py" ]]; then
+  APP_DIR="${SCRIPT_DIR}/backend"
+elif [[ -f "$(pwd)/manage.py" ]]; then
+  APP_DIR="$(pwd)"
+elif [[ -f "$(pwd)/backend/manage.py" ]]; then
+  APP_DIR="$(pwd)/backend"
+else
+  echo "Could not find manage.py."
+  echo "Clone the repo, then run: sudo bash backend/deploy.sh"
+  exit 1
+fi
+
+APP_DIR="$(cd "${APP_DIR}" && pwd)"
 FRONTEND_DIR="${APP_DIR}/frontend"
 VENV_DIR="${APP_DIR}/.venv"
 ENV_FILE="${APP_DIR}/.env"
@@ -30,11 +61,25 @@ SOCKET_PATH="/run/${APP_NAME}/${APP_NAME}.sock"
 SERVICE_NAME="${APP_NAME}"
 NGINX_SITE="/etc/nginx/sites-available/${APP_NAME}"
 
+echo "==> App directory: ${APP_DIR}"
+
 if [[ ! -f "${APP_DIR}/manage.py" ]]; then
   echo "manage.py not found in ${APP_DIR}"
-  echo "Copy the backend folder to the VPS and run this script from inside it."
   exit 1
 fi
+
+if [[ ! -f "${APP_DIR}/requirements.txt" ]]; then
+  echo "requirements.txt not found in ${APP_DIR}"
+  exit 1
+fi
+
+if [[ ! -f "${FRONTEND_DIR}/package.json" ]]; then
+  echo "Frontend not found at ${FRONTEND_DIR}"
+  echo "Expected git layout: backend/frontend/ (package.json, src/, public/)"
+  exit 1
+fi
+
+id -u "${APP_USER}" >/dev/null 2>&1 || APP_USER="www-data"
 
 echo "==> Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
@@ -43,9 +88,10 @@ apt-get install -y \
   python3 python3-venv python3-pip python3-dev \
   build-essential libsqlite3-dev \
   nginx curl ca-certificates gnupg \
-  certbot python3-certbot-nginx
+  certbot python3-certbot-nginx \
+  git
 
-if ! command -v node >/dev/null 2>&1 || ! node -v | grep -qE 'v(1[89]|2[0-9])'; then
+if ! command -v node >/dev/null 2>&1 || ! node -v 2>/dev/null | grep -qE 'v(1[89]|2[0-9])'; then
   echo "==> Installing Node.js 20"
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
@@ -73,35 +119,59 @@ else
   echo "==> Using existing ${ENV_FILE}"
 fi
 
-chmod 640 "${ENV_FILE}"
-chown root:"${APP_USER}" "${ENV_FILE}"
+mkdir -p "${APP_DIR}/media" "${APP_DIR}/staticfiles" "${APP_DIR}/logs"
 
 set -a
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 set +a
 
-mkdir -p "${APP_DIR}/media" "${APP_DIR}/staticfiles" "${APP_DIR}/logs"
-# App user needs read on code and write on db/media/logs
-chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
-chmod 640 "${ENV_FILE}"
-chown root:"${APP_USER}" "${ENV_FILE}"
-
 echo "==> Django migrate + collectstatic"
 cd "${APP_DIR}"
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput
 
-if [[ ! -f "${FRONTEND_DIR}/package.json" ]]; then
-  echo "Frontend not found at ${FRONTEND_DIR}"
+if [[ "${SEED_DATA}" == "1" ]]; then
+  if python manage.py help seed_listings >/dev/null 2>&1; then
+    COUNT="$(python - <<'PY'
+import os, django
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+django.setup()
+from listings.models import Property
+print(Property.objects.count())
+PY
+)"
+    if [[ "${COUNT}" == "0" ]]; then
+      echo "==> Seeding listings (fresh git DB has no data)"
+      python manage.py seed_listings || echo "WARN: seed_listings failed (continuing)"
+    else
+      echo "==> DB already has ${COUNT} properties — skip seed"
+    fi
+  fi
+fi
+
+echo "==> Building frontend (node_modules/dist are not in git)"
+cd "${FRONTEND_DIR}"
+if [[ -f package-lock.json ]]; then
+  npm ci || npm install
+else
+  npm install
+fi
+VITE_API_URL=/api npm run build
+
+if [[ ! -f "${FRONTEND_DIR}/dist/index.html" ]]; then
+  echo "Frontend build failed: ${FRONTEND_DIR}/dist/index.html missing"
   exit 1
 fi
 
-echo "==> Building frontend"
-cd "${FRONTEND_DIR}"
-npm ci || npm install
-VITE_API_URL=/api npm run build
-chown -R "${APP_USER}:${APP_USER}" "${FRONTEND_DIR}/dist"
+# Critical for git deploys: migrate/build ran as root — Gunicorn is www-data
+echo "==> Fixing ownership for ${APP_USER}"
+chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
+chmod 640 "${ENV_FILE}"
+chown root:"${APP_USER}" "${ENV_FILE}"
+# SQLite needs write on the directory for -journal/-wal files
+chmod 775 "${APP_DIR}"
+chmod 664 "${APP_DIR}/db.sqlite3" 2>/dev/null || true
 
 echo "==> Writing Gunicorn systemd unit"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
@@ -197,9 +267,16 @@ fi
 
 echo "==> Starting services"
 systemctl daemon-reload
-systemctl enable --now "${SERVICE_NAME}"
-# Wait briefly for socket
+systemctl enable "${SERVICE_NAME}"
+systemctl restart "${SERVICE_NAME}"
 sleep 2
+
+if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
+  echo "ERROR: ${SERVICE_NAME} failed to start"
+  journalctl -u "${SERVICE_NAME}" -n 40 --no-pager || true
+  exit 1
+fi
+
 nginx -t
 systemctl reload nginx
 
@@ -218,7 +295,7 @@ systemctl reload nginx
 
 echo
 echo "============================================"
-echo " Deploy complete"
+echo " Deploy complete (git-ready)"
 echo " URL:     https://${DOMAIN}  (or http:// if SSL pending)"
 echo " API:     /api/"
 echo " Django:  /admin/"
@@ -227,5 +304,7 @@ echo " Env:     ${ENV_FILE}"
 echo " Logs:    ${APP_DIR}/logs/"
 echo " Status:  systemctl status ${SERVICE_NAME}"
 echo "============================================"
-echo "1) Point ${DOMAIN} A record to this VPS IP"
-echo "2) Change ADMIN_PIN in ${ENV_FILE}, then: systemctl restart ${SERVICE_NAME}"
+echo "Clone + deploy:"
+echo "  git clone https://github.com/searchgrand197/bhumi.git && cd bhumi"
+echo "  sudo bash backend/deploy.sh"
+echo "Change ADMIN_PIN in ${ENV_FILE}, then: systemctl restart ${SERVICE_NAME}"

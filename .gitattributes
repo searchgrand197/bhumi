@@ -1,0 +1,5 @@
+* text=auto
+
+# Shell scripts must stay LF or bash fails on Ubuntu after Windows checkout/push
+*.sh text eol=lf
+deploy.sh text eol=lf
