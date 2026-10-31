@@ -3,7 +3,7 @@ import Filters from './components/Filters';
 import PropertyCard from './components/PropertyCard';
 import PhoneModal from './components/PhoneModal';
 import { fetchLocalities, fetchProperties } from './api';
-import { CITY, buildExactAreaLabel } from './data/geo';
+import { CITY, CONTACT_WHATSAPP, buildExactAreaLabel } from './data/geo';
 import './App.css';
 
 const CATEGORIES = [
@@ -272,7 +272,7 @@ export default function App() {
     const message = encodeURIComponent(
       `Hi, I am interested in ${property.title} (${property.id}) in ${property.locality}, ${CITY}.`
     );
-    window.open(`https://wa.me/919876543210?text=${message}`, '_blank', 'noopener,noreferrer');
+    window.open(`${CONTACT_WHATSAPP}?text=${message}`, '_blank', 'noopener,noreferrer');
     setChatToast(`Opening WhatsApp for ${property.id}`);
     setTimeout(() => setChatToast(''), 2500);
   }

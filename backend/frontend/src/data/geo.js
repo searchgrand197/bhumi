@@ -1,5 +1,11 @@
 export const CITY = 'Jind';
 
+/** Broker contact — Call + WhatsApp (10 digits, no +91) */
+export const CONTACT_PHONE = '8397861681';
+export const CONTACT_PHONE_DISPLAY = '83978-61681';
+export const CONTACT_TEL = `tel:+91${CONTACT_PHONE}`;
+export const CONTACT_WHATSAPP = `https://wa.me/91${CONTACT_PHONE}`;
+
 export const NEARBY_RADIUS_KM = 4;
 
 export function distanceKm(a, b) {

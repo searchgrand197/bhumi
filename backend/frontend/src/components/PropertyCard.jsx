@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CITY, formatPrice } from '../data/geo';
+import { CITY, CONTACT_TEL, formatPrice } from '../data/geo';
 
 function formatFacing(facing) {
   const value = String(facing || '').trim();
@@ -146,15 +146,24 @@ export default function PropertyCard({ property, onChat }) {
           )}
         </ul>
 
-        <button
-          type="button"
-          className="whatsapp-btn"
-          onClick={() => onChat(property)}
-          aria-label={`Contact now about ${property.title}`}
-        >
-          <span className="whatsapp-icon" aria-hidden="true" />
-          <span className="whatsapp-label">Contact now</span>
-        </button>
+        <div className="contact-actions">
+          <a
+            className="call-btn"
+            href={CONTACT_TEL}
+            aria-label={`Call about ${property.title}`}
+          >
+            Call
+          </a>
+          <button
+            type="button"
+            className="whatsapp-btn"
+            onClick={() => onChat(property)}
+            aria-label={`WhatsApp about ${property.title}`}
+          >
+            <span className="whatsapp-icon" aria-hidden="true" />
+            <span className="whatsapp-label">WhatsApp</span>
+          </button>
+        </div>
       </div>
     </article>
   );
