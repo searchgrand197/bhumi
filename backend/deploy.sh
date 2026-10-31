@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 # One-shot Ubuntu deploy: Django (Gunicorn) + Vite frontend + Nginx
 # Domain: yourbrand.intvice.com
+# Target layout: /root/bhumi/backend/manage.py
 #
-# After cloning from GitHub:
-#   git clone https://github.com/searchgrand197/bhumi.git
-#   cd bhumi
-#   sudo bash backend/deploy.sh
-#
-# Or from the backend folder:
-#   cd bhumi/backend && sudo bash deploy.sh
+# On the VPS as root:
+#   git clone https://github.com/searchgrand197/bhumi.git /root/bhumi
+#   bash /root/bhumi/backend/deploy.sh
 #
 # Optional:
-#   DOMAIN=yourbrand.intvice.com EMAIL=you@example.com sudo -E bash backend/deploy.sh
+#   DOMAIN=yourbrand.intvice.com EMAIL=you@example.com bash /root/bhumi/backend/deploy.sh
 
 set -euo pipefail
 
@@ -28,17 +25,20 @@ APP_USER="${APP_USER:-www-data}"
 EMAIL="${EMAIL:-admin@${DOMAIN}}"
 WORKERS="${WORKERS:-$(( $(nproc) * 2 + 1 ))}"
 SEED_DATA="${SEED_DATA:-1}"
+PREFERRED_APP_DIR="/root/bhumi/backend"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run as root: sudo bash deploy.sh"
+  echo "Run as root: bash /root/bhumi/backend/deploy.sh"
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Support both: repo root (bhumi/) and backend/ (bhumi/backend/)
+# Prefer /root/bhumi/backend, else detect from script / cwd
 if [[ -n "${APP_DIR:-}" ]]; then
   :
+elif [[ -f "${PREFERRED_APP_DIR}/manage.py" && ( "${SCRIPT_DIR}" == "${PREFERRED_APP_DIR}" || "${SCRIPT_DIR}" == "/root/bhumi" ) ]]; then
+  APP_DIR="${PREFERRED_APP_DIR}"
 elif [[ -f "${SCRIPT_DIR}/manage.py" ]]; then
   APP_DIR="${SCRIPT_DIR}"
 elif [[ -f "${SCRIPT_DIR}/backend/manage.py" ]]; then
@@ -47,9 +47,13 @@ elif [[ -f "$(pwd)/manage.py" ]]; then
   APP_DIR="$(pwd)"
 elif [[ -f "$(pwd)/backend/manage.py" ]]; then
   APP_DIR="$(pwd)/backend"
+elif [[ -f "${PREFERRED_APP_DIR}/manage.py" ]]; then
+  APP_DIR="${PREFERRED_APP_DIR}"
 else
   echo "Could not find manage.py."
-  echo "Clone the repo, then run: sudo bash backend/deploy.sh"
+  echo "Expected: /root/bhumi/backend/manage.py"
+  echo "  git clone https://github.com/searchgrand197/bhumi.git /root/bhumi"
+  echo "  bash /root/bhumi/backend/deploy.sh"
   exit 1
 fi
 
@@ -62,6 +66,19 @@ SERVICE_NAME="${APP_NAME}"
 NGINX_SITE="/etc/nginx/sites-available/${APP_NAME}"
 
 echo "==> App directory: ${APP_DIR}"
+
+# /root is mode 700 by default — Nginx/www-data cannot reach /root/bhumi without traverse
+if [[ "${APP_DIR}" == /root/* ]]; then
+  echo "==> Allowing Nginx/Gunicorn to traverse /root -> bhumi"
+  chmod 711 /root
+  chmod 755 /root/bhumi 2>/dev/null || true
+  # every directory in the path needs +x for others
+  d="${APP_DIR}"
+  while [[ "${d}" == /root/* && "${d}" != "/root" ]]; do
+    chmod a+x "${d}" 2>/dev/null || true
+    d="$(dirname "${d}")"
+  done
+fi
 
 if [[ ! -f "${APP_DIR}/manage.py" ]]; then
   echo "manage.py not found in ${APP_DIR}"
@@ -304,7 +321,8 @@ echo " Env:     ${ENV_FILE}"
 echo " Logs:    ${APP_DIR}/logs/"
 echo " Status:  systemctl status ${SERVICE_NAME}"
 echo "============================================"
+echo "Install path: /root/bhumi/backend/manage.py"
 echo "Clone + deploy:"
-echo "  git clone https://github.com/searchgrand197/bhumi.git && cd bhumi"
-echo "  sudo bash backend/deploy.sh"
+echo "  git clone https://github.com/searchgrand197/bhumi.git /root/bhumi"
+echo "  bash /root/bhumi/backend/deploy.sh"
 echo "Change ADMIN_PIN in ${ENV_FILE}, then: systemctl restart ${SERVICE_NAME}"
